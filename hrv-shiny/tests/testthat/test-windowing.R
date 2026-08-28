@@ -97,7 +97,7 @@ test_that("表示用間引き（decimate_for_display）は解析結果に影響�
   expect_true(length(disp$x) <= 500)
 
   res <- run_hrv_analysis(
-    t, ppg, fs, 0, 60, mode = "legacy", window_mode = "single",
+    t, ppg, fs, 0, 60, window_mode = "single",
     freq_bands = TEST_BANDS, config = TEST_CONFIG, file_name = "x", analysis_id = "y"
   )
   # 間引き後データを解析対象として使っていないことを、生波形サンプル数で確認する
@@ -113,7 +113,7 @@ test_that("CSVダウンロード値（write_csv_utf8で書き出した結果）�
   ppg <- sin(phase) + 0.02 * rnorm(length(t))
 
   res <- run_hrv_analysis(
-    t, ppg, fs, 0, 120, mode = "legacy", window_mode = "fixed",
+    t, ppg, fs, 0, 120, window_mode = "fixed",
     window_length_sec = 60, step_sec = 60,
     freq_bands = TEST_BANDS, config = TEST_CONFIG, file_name = "x", analysis_id = "y"
   )
@@ -135,7 +135,7 @@ test_that("解析範囲全体でピークが検出できない場合は分かり
   ppg <- rep(0, length(t))  # ピークが検出できない平坦な信号
 
   expect_error(
-    run_hrv_analysis(t, ppg, fs, 0, 10, mode = "legacy", window_mode = "single",
+    run_hrv_analysis(t, ppg, fs, 0, 10, window_mode = "single",
                       freq_bands = TEST_BANDS, config = TEST_CONFIG),
     "ピーク数が不足"
   )
@@ -150,7 +150,7 @@ test_that("一部の窓だけRR不足で失敗しても、他の窓は正常に�
   ppg <- sin(phase) + 0.02 * rnorm(length(t))
 
   res <- run_hrv_analysis(
-    t, ppg, fs, 0, 125, mode = "legacy", window_mode = "fixed",
+    t, ppg, fs, 0, 125, window_mode = "fixed",
     window_length_sec = 60, step_sec = 60,
     freq_bands = TEST_BANDS, config = TEST_CONFIG, file_name = "x", analysis_id = "y"
   )
@@ -172,7 +172,7 @@ test_that("極端に短い窓（30秒）でも結果行が生成され、短窓�
   ppg <- sin(phase) + 0.02 * rnorm(length(t))
 
   res <- run_hrv_analysis(
-    t, ppg, fs, 0, 60, mode = "legacy", window_mode = "fixed",
+    t, ppg, fs, 0, 60, window_mode = "fixed",
     window_length_sec = 30, step_sec = 30,
     freq_bands = TEST_BANDS, config = TEST_CONFIG, file_name = "x", analysis_id = "y"
   )

@@ -19,11 +19,11 @@ test_that("generate_rr()はピーク時刻差からRRを算出し後側ピーク
   expect_equal(rr$ms, c(800, 1600, 2400))  # 後側ピークの時刻
 })
 
-test_that("correct_rr_outliers()のrecommendedモードは一括マスク後に単回補間する", {
+test_that("correct_rr_outliers()は一括マスク後に単回補間する", {
   set.seed(11)
   rr <- rnorm(30, mean = 800, sd = 8)
   rr[15] <- 1600  # 明確な外れ値（正常RRのおよそ2倍）
-  res <- correct_rr_outliers(rr, mode = "recommended", sd_multiplier = 3)
+  res <- correct_rr_outliers(rr, sd_multiplier = 3)
 
   expect_true(res$outlier_flag[15])
   expect_equal(sum(res$outlier_flag), 1L)
@@ -31,41 +31,18 @@ test_that("correct_rr_outliers()のrecommendedモードは一括マスク後に�
   expect_equal(res$artifact_percent, 100 * 1 / 30)
 })
 
-test_that("correct_rr_outliers()のlegacyモードは逐次median±3SD補正を行う（原アルゴリズム再現）", {
-  set.seed(11)
-  rr <- rnorm(30, mean = 800, sd = 8)
-  rr[15] <- 1600
-  res <- correct_rr_outliers(rr, mode = "legacy", sd_multiplier = 3)
-
-  expect_true(res$outlier_flag[15])
-  expect_false(is.na(res$corrected[15]))
-})
-
 test_that("外れ値がない場合は補正率0で系列が変化しない", {
   rr <- c(800, 810, 795, 805, 790, 800)
-  res_leg <- correct_rr_outliers(rr, mode = "legacy")
-  res_rec <- correct_rr_outliers(rr, mode = "recommended")
+  res <- correct_rr_outliers(rr)
 
-  expect_equal(res_leg$artifact_percent, 0)
-  expect_equal(res_rec$artifact_percent, 0)
-  expect_equal(res_leg$corrected, rr)
-  expect_equal(res_rec$corrected, rr)
+  expect_equal(res$artifact_percent, 0)
+  expect_equal(res$corrected, rr)
 })
 
-test_that("resample_rr()のlegacyモードは1Hzで等間隔系列を返す", {
+test_that("resample_rr()は指定Hzで等間隔系列を返す", {
   event_ms <- seq(0, 60000, by = 800)
   values <- rep(800, length(event_ms))
-  res <- resample_rr(event_ms, values, mode = "legacy")
-
-  expect_equal(res$resample_hz, 1)
-  expect_true(all(diff(res$time_sec) - 1 < 1e-6))
-  expect_true(all(abs(res$value - 800) < 1e-6))
-})
-
-test_that("resample_rr()のrecommendedモードは指定Hzで等間隔系列を返す", {
-  event_ms <- seq(0, 60000, by = 800)
-  values <- rep(800, length(event_ms))
-  res <- resample_rr(event_ms, values, mode = "recommended", resample_hz = 4)
+  res <- resample_rr(event_ms, values, resample_hz = 4)
 
   expect_equal(res$resample_hz, 4)
   expect_true(all(abs(diff(res$time_sec) - 0.25) < 1e-6))
@@ -73,7 +50,7 @@ test_that("resample_rr()のrecommendedモードは指定Hzで等間隔系列を�
 })
 
 test_that("resample_rr()はイベント不足でエラーになる（spline補間不能）", {
-  expect_error(resample_rr(c(0), c(800), mode = "recommended"))
+  expect_error(resample_rr(c(0), c(800)))
 })
 
 test_that("time_domain_metrics()はSDNN/RMSSD/平均HRを正しく算出する", {
@@ -99,15 +76,15 @@ test_that("time_domain_metrics()は空・NAのみでも落ちずNAを返す", {
 test_that("run_rr_pipeline()はRR生成->補正->等間隔化の順で標準パイプラインを実行する", {
   set.seed(5)
   peaks <- make_peaks_from_times(cumsum(c(0, rep(0.8, 40))) + rnorm(41, sd = 0.005))
-  res <- run_rr_pipeline(peaks, mode = "legacy")
+  res <- run_rr_pipeline(peaks)
 
   expect_true(is.data.frame(res$rr))
   expect_true("RR_ms_corrected" %in% names(res$rr))
   expect_true(is.list(res$resampled))
-  expect_equal(res$resampled$resample_hz, 1)
+  expect_equal(res$resampled$resample_hz, 4)
 })
 
 test_that("RR間隔が2未満だとエラーになる（アプリが落ちない設計の前提となるエラー処理）", {
   peaks <- make_peaks_from_times(c(0))
-  expect_error(run_rr_pipeline(peaks, mode = "legacy"), "RR間隔")
+  expect_error(run_rr_pipeline(peaks), "RR間隔")
 })
