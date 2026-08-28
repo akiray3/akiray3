@@ -10,25 +10,16 @@ sampling:
   max_valid_fs_hz: 2000
 
 peak_detection:
-  legacy:
-    min_peak_distance_factor: 0.5   # minpeakdistance = factor * samplingRate（固定・変更不可）
-  recommended:
-    min_peak_distance_sec: 0.35     # 120bpm超を許容する既定値（UIから変更可）
-    min_peak_height: null
+  min_peak_distance_sec: 0.35     # 120bpm超を許容する既定値（UIから変更可）
+  min_peak_height: null
 
 outlier:
-  legacy:
-    sd_multiplier: 3
-  recommended:
-    sd_multiplier: 3
-    method: "batch"                 # 一括マスク後に一回だけ補間
+  sd_multiplier: 3
+  method: "batch"                 # 一括マスク後に一回だけ補間
 
 resampling:
-  legacy:
-    grid_hz: 1                      # 1ms格子 -> zoo::na.spline -> 1Hz抽出
-  recommended:
-    default_hz: 4
-    candidate_hz: [2, 4, 8]
+  default_hz: 4
+  candidate_hz: [2, 4, 8]
 
 frequency_bands:
   lf_lower_hz: 0.04

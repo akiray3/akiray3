@@ -3,10 +3,10 @@
 # 管理を容易にするため、解析ロジック・UI・サーバーを1ファイルにまとめている。
 # セクション見出し（## ==== ... ====）で区切って整理する。
 #
-# 注意：本アプリを作成したセッションの環境には PulseWaveTools パッケージの
-# 原本ソースも実データファイルも存在しなかった（詳細はREADME.md参照）。
-# 「PulseWaveTools legacy」セクションは引き継ぎ書の記述に基づく再実装であり、
-# 実データ・原本ソースが入手でき次第、数値比較のうえ修正すること。
+# 入力ファイルの形式はShimmer出力（sep=行・ヘッダ・単位行つきTSV/CSV）に統一
+# されているため、時刻列・PPG列はKNOWN_TIME_COLS/KNOWN_PPG_COLSから自動判定
+# する（ユーザーに列を選ばせるUIは持たない）。解析パイプラインはrecommended
+# （改良版）のみを実装する。
 
 library(shiny)
 library(DT)
@@ -32,10 +32,15 @@ detect_shimmer_format <- function(path, n_peek = 10L) {
   raw_lines <- raw_lines[!is.na(raw_lines) & nzchar(trimws(raw_lines))]
   if (length(raw_lines) == 0L) stop("ファイルを解釈できません（空ファイル、または読み込めません）。")
 
+  # Excel等で再保存されたファイルは "sep=," のように先頭行が二重引用符で
+  # 囲まれることがあるため、判定前に前後の引用符を取り除く。
+  strip_quotes <- function(x) sub('^"(.*)"$', "\\1", x)
+
   skip_lines <- 0L
   sep_declared <- NA_character_
-  if (grepl("^sep=", raw_lines[1], ignore.case = TRUE)) {
-    sep_char <- sub("^sep=", "", raw_lines[1], ignore.case = TRUE)
+  first_line <- strip_quotes(raw_lines[1])
+  if (grepl("^sep=", first_line, ignore.case = TRUE)) {
+    sep_char <- sub("^sep=", "", first_line, ignore.case = TRUE)
     if (nchar(sep_char) >= 1L) sep_declared <- substr(sep_char, 1, 1)
     skip_lines <- 1L
     raw_lines <- raw_lines[-1]
@@ -54,7 +59,7 @@ detect_shimmer_format <- function(path, n_peek = 10L) {
   if (max(field_counts) < 2L) stop("ファイルを解釈できません（タブ・カンマ・セミコロンいずれでも列を分割できません）。")
 
   is_numeric_token <- function(x) !is.na(suppressWarnings(as.numeric(x))) & nchar(x) > 0
-  header_fields <- trimws(strsplit(header_line, delim, fixed = TRUE)[[1]])
+  header_fields <- strip_quotes(trimws(strsplit(header_line, delim, fixed = TRUE)[[1]]))
 
   if (all(is_numeric_token(header_fields))) {
     # ヘッダなし2列（以上）形式：ヘッダ・単位行なしとみなす
@@ -185,108 +190,18 @@ import_shimmer_file <- function(path, time_col = NULL, ppg_col = NULL, fs_overri
        warnings = warnings_jp, n_samples = nrow(dt))
 }
 
-## ==== PulseWaveTools legacy（原アルゴリズム仕様の再実装） ==============
-# findPulsePeaksの呼び出しコードは引き継ぎ書の原文ママ。findHRV/resamplingEvent/
-# omitOutlierは文書中のアルゴリズム記述に基づく再実装（原本ソース未入手のため）。
-# 原コードの問題点（omitOutlierの順序依存性など）は無条件に修正せず忠実再現する。
+## ==== ピーク検出・RR処理 ================================================
+# ピーク検出(pracma::findpeaks) → RR生成 → 外れ値補正（一括マスク後に単回
+# spline補間） → 等間隔化（直接spline補間）の順で実行する標準パイプライン。
 
-findPulsePeaks_legacy <- function(dat, samplingRate, time_ms = NULL) {
-  if (is.null(dim(dat))) dat <- matrix(dat, ncol = 1)
-  if (nrow(dat) < 3) stop("findPulsePeaks_legacy: データ点数が不足しています。")
-  if (!is.numeric(samplingRate) || is.na(samplingRate) || samplingRate <= 0) {
-    stop("findPulsePeaks_legacy: samplingRate が不正です。")
-  }
-
-  # minpeakdistance = 0.5 * samplingRate は原仕様のため変更しない（RR<500msは検出不可）
-  pk <- pracma::findpeaks(as.matrix(dat)[, 1], minpeakdistance = 0.5 * samplingRate, zero = "+", sortstr = FALSE)
-  if (is.null(pk) || nrow(pk) == 0L) return(data.frame(Amplitude = numeric(0), Point = integer(0), ms = numeric(0)))
-
-  out <- data.frame(Amplitude = pk[, 1], Point = as.integer(pk[, 2]))
-  out <- out[order(out$Point), , drop = FALSE]
-  out$ms <- if (is.null(time_ms)) (out$Point - 1) / samplingRate * 1000 else time_ms[out$Point]
-  rownames(out) <- NULL
-  out
-}
-
-findHRV_legacy <- function(peaks) {
-  if (nrow(peaks) < 2L) return(data.frame(Point = integer(0), ms = numeric(0), RR_ms = numeric(0)))
-  # RRは後側のピーク時刻に対応づける
-  data.frame(Point = peaks$Point[-1], ms = peaks$ms[-1], RR_ms = diff(peaks$ms))
-}
-
-resamplingEvent_legacy <- function(event_ms, values) {
-  if (length(event_ms) != length(values)) stop("resamplingEvent_legacy: event_ms と values の長さが一致しません。")
-  if (length(event_ms) < 2L) stop("resamplingEvent_legacy: イベント数が不足しているため補間できません。")
-
-  # 原アルゴリズム：1ms格子に配置してspline補間後、1Hzに間引く（メモリ効率は悪いが忠実再現）
-  grid_ms <- seq(floor(min(event_ms)), ceiling(max(event_ms)), by = 1)
-  grid_value <- rep(NA_real_, length(grid_ms))
-  idx <- pmin(pmax(round(event_ms - grid_ms[1]) + 1L, 1L), length(grid_ms))
-  grid_value[idx] <- values
-
-  interp <- tryCatch(zoo::na.spline(zoo::zoo(grid_value, order.by = grid_ms), na.rm = FALSE), error = function(e) NULL)
-  if (is.null(interp)) stop("resamplingEvent_legacy: spline補間に失敗しました。")
-
-  sel <- seq(1L, length(grid_ms), by = 1000L)
-  list(time_sec = (grid_ms[sel] - grid_ms[1]) / 1000, value = as.numeric(interp)[sel])
-}
-
-omitOutlier_legacy <- function(rr_values, sd_multiplier = 3) {
-  x <- as.numeric(rr_values)
-  n <- length(x)
-  if (n == 0L) return(list(corrected = numeric(0), outlier_flag = logical(0), artifact_percent = NA_real_))
-  outlier_flag <- rep(FALSE, n)
-
-  # 原アルゴリズム：median/SDをループ内で逐次再計算しながらNA化・補間するため順序依存
-  for (i in seq_len(n)) {
-    if (is.na(x[i])) next
-    m <- stats::median(x, na.rm = TRUE)
-    s <- stats::sd(x, na.rm = TRUE)
-    if (is.na(s) || s == 0) next
-    if (abs(x[i] - m) > sd_multiplier * s) {
-      x[i] <- NA_real_
-      outlier_flag[i] <- TRUE
-      if (sum(!is.na(x)) >= 2L) {
-        x <- as.numeric(tryCatch(zoo::na.spline(zoo::zoo(x), na.rm = FALSE), error = function(e) zoo::zoo(x)))
-      }
-    }
-  }
-  list(corrected = x, outlier_flag = outlier_flag, artifact_percent = 100 * sum(outlier_flag) / n)
-}
-
-# 互換性検証専用：原コードの処理順序 RR生成→等間隔化→外れ値補正
-# （アプリ標準パイプラインrun_rr_pipeline()の順序: RR生成→補正→等間隔化とは異なる）
-findHRV2_legacy <- function(dat, samplingRate, time_ms = NULL, sd_multiplier = 3) {
-  peaks <- findPulsePeaks_legacy(dat, samplingRate, time_ms)
-  rr <- findHRV_legacy(peaks)
-  resampled <- resamplingEvent_legacy(rr$ms, rr$RR_ms)
-  corrected <- omitOutlier_legacy(resampled$value, sd_multiplier = sd_multiplier)
-  list(peaks = peaks, rr = rr, resampled = resampled, corrected = corrected)
-}
-
-## ==== ピーク検出（legacy/recommended 統一インターフェース） ============
-# legacyはfindPulsePeaks_legacy()をそのまま使用（0.5*fs固定）。recommendedは
-# 最小ピーク距離を設定可能にし、120bpm超（既定0.35秒=約171bpmまで）も検出できる。
-
-detect_peaks <- function(ppg, samplingRate, time_sec = NULL, mode = c("legacy", "recommended"),
-                          min_peak_distance_sec = NULL, min_peak_height = NULL) {
-  mode <- match.arg(mode)
+detect_peaks <- function(ppg, samplingRate, time_sec = NULL, min_peak_distance_sec = NULL, min_peak_height = NULL) {
   if (length(ppg) < 3L) stop("ピーク検出に必要なデータ点数が不足しています。")
   if (!is.numeric(samplingRate) || is.na(samplingRate) || samplingRate <= 0) stop("サンプリング周波数が不正です。")
-
-  time_ms <- if (!is.null(time_sec)) time_sec * 1000 else NULL
-
-  if (mode == "legacy") {
-    peaks <- findPulsePeaks_legacy(ppg, samplingRate, time_ms = time_ms)
-    params <- list(mode = "legacy", min_peak_distance_sec = 0.5,
-                    min_peak_distance_note = "固定値（PulseWaveTools原仕様: 0.5 * samplingRate）。RR 500ms未満（120bpm超）は検出されない。",
-                    min_peak_height = NA_real_)
-    return(list(peaks = peaks, params = params))
-  }
-
   if (is.null(min_peak_distance_sec) || !is.finite(min_peak_distance_sec) || min_peak_distance_sec <= 0) {
     min_peak_distance_sec <- 0.35
   }
+
+  time_ms <- if (!is.null(time_sec)) time_sec * 1000 else NULL
   fp_args <- list(x = as.numeric(ppg), minpeakdistance = min_peak_distance_sec * samplingRate, zero = "+", sortstr = FALSE)
   if (!is.null(min_peak_height) && is.finite(min_peak_height)) fp_args$minpeakheight <- min_peak_height
   pk <- do.call(pracma::findpeaks, fp_args)
@@ -300,33 +215,21 @@ detect_peaks <- function(ppg, samplingRate, time_sec = NULL, mode = c("legacy", 
     rownames(peaks) <- NULL
   }
 
-  params <- list(mode = "recommended", min_peak_distance_sec = min_peak_distance_sec,
-                  min_peak_distance_note = "ユーザー設定可能（既定0.35秒 = 約171bpmまで検出可）。",
-                  min_peak_height = if (is.null(min_peak_height)) NA_real_ else min_peak_height)
-  list(peaks = peaks, params = params)
+  list(peaks = peaks, params = list(min_peak_distance_sec = min_peak_distance_sec,
+                                     min_peak_height = min_peak_height %||% NA_real_))
 }
 
-## ==== RR処理（統一）：生成・外れ値補正・等間隔化・時間領域指標 ==========
-# 標準パイプライン（section 5）: ピーク検出 → RR生成 → RR補正 → 等間隔化。
-# legacy/recommendedの違いは各アルゴリズムの中身であり、処理順序ではない。
+generate_rr <- function(peaks) {
+  if (nrow(peaks) < 2L) return(data.frame(Point = integer(0), ms = numeric(0), RR_ms = numeric(0)))
+  # RRは後側のピーク時刻に対応づける
+  data.frame(Point = peaks$Point[-1], ms = peaks$ms[-1], RR_ms = diff(peaks$ms))
+}
 
-generate_rr <- function(peaks) findHRV_legacy(peaks)
-
-correct_rr_outliers <- function(rr_values, mode = c("legacy", "recommended"), sd_multiplier = 3) {
-  mode <- match.arg(mode)
-  n <- length(rr_values)
-
-  if (mode == "legacy") {
-    res <- omitOutlier_legacy(rr_values, sd_multiplier = sd_multiplier)
-    return(list(corrected = res$corrected, outlier_flag = res$outlier_flag, artifact_percent = res$artifact_percent,
-                method = "legacy: 逐次 median±3SD 補正（順序依存、原PulseWaveTools再現）"))
-  }
-  if (n == 0L) {
-    return(list(corrected = numeric(0), outlier_flag = logical(0), artifact_percent = NA_real_,
-                method = "recommended: 一括マスク後に単回spline補間"))
-  }
-
+correct_rr_outliers <- function(rr_values, sd_multiplier = 3) {
   x <- as.numeric(rr_values)
+  n <- length(x)
+  if (n == 0L) return(list(corrected = numeric(0), outlier_flag = logical(0), artifact_percent = NA_real_))
+
   m <- stats::median(x, na.rm = TRUE)
   s <- stats::sd(x, na.rm = TRUE)
   mask <- if (!is.na(s) && s > 0) !is.na(x) & abs(x - m) > sd_multiplier * s else rep(FALSE, n)
@@ -338,18 +241,10 @@ correct_rr_outliers <- function(rr_values, mode = c("legacy", "recommended"), sd
     x_corrected <- as.numeric(tryCatch(zoo::na.spline(zoo::zoo(x_corrected), na.rm = FALSE),
                                         error = function(e) stop("spline補間に失敗しました。")))
   }
-  list(corrected = x_corrected, outlier_flag = mask, artifact_percent = 100 * sum(mask) / n,
-       method = "recommended: 一括マスク後に単回spline補間")
+  list(corrected = x_corrected, outlier_flag = mask, artifact_percent = 100 * sum(mask) / n)
 }
 
-resample_rr <- function(event_ms, values, mode = c("legacy", "recommended"), resample_hz = NULL) {
-  mode <- match.arg(mode)
-  if (mode == "legacy") {
-    res <- resamplingEvent_legacy(event_ms, values)
-    return(list(time_sec = res$time_sec, value = res$value, resample_hz = 1,
-                method = "legacy: 1ms格子->zoo::na.spline->1Hz抽出（原PulseWaveTools再現）"))
-  }
-
+resample_rr <- function(event_ms, values, resample_hz = NULL) {
   if (is.null(resample_hz) || !is.finite(resample_hz) || resample_hz <= 0) resample_hz <- 4
   if (length(event_ms) < 2L) stop("イベント数が不足しているため補間できません。")
 
@@ -357,8 +252,7 @@ resample_rr <- function(event_ms, values, mode = c("legacy", "recommended"), res
   grid_sec <- seq(event_sec[1], event_sec[length(event_sec)], by = 1 / resample_hz)
   interp <- tryCatch(stats::spline(x = event_sec, y = values, xout = grid_sec, method = "natural"), error = function(e) NULL)
   if (is.null(interp)) stop("spline補間に失敗しました。")
-  list(time_sec = interp$x, value = interp$y, resample_hz = resample_hz,
-       method = "recommended: イベント時刻から直接spline補間（等間隔格子）")
+  list(time_sec = interp$x, value = interp$y, resample_hz = resample_hz)
 }
 
 time_domain_metrics <- function(rr_ms) {
@@ -372,18 +266,16 @@ time_domain_metrics <- function(rr_ms) {
        rmssd_ms = if (length(x) >= 2L) sqrt(mean(diff(x)^2)) else NA_real_, n_rr_used = length(x))
 }
 
-run_rr_pipeline <- function(peaks, mode = c("legacy", "recommended"), sd_multiplier = 3, resample_hz = NULL) {
-  mode <- match.arg(mode)
+run_rr_pipeline <- function(peaks, sd_multiplier = 3, resample_hz = NULL) {
   rr <- generate_rr(peaks)
   if (nrow(rr) < 2L) stop("RR間隔が不足しているため解析できません（ピーク数を確認してください）。")
 
-  corr <- correct_rr_outliers(rr$RR_ms, mode = mode, sd_multiplier = sd_multiplier)
+  corr <- correct_rr_outliers(rr$RR_ms, sd_multiplier = sd_multiplier)
   rr$RR_ms_corrected <- corr$corrected
   rr$is_outlier <- corr$outlier_flag
-  resampled <- resample_rr(rr$ms, rr$RR_ms_corrected, mode = mode, resample_hz = resample_hz)
+  resampled <- resample_rr(rr$ms, rr$RR_ms_corrected, resample_hz = resample_hz)
 
-  list(rr = rr, artifact_percent = corr$artifact_percent, outlier_method = corr$method,
-       resampled = resampled, resample_method = resampled$method)
+  list(rr = rr, artifact_percent = corr$artifact_percent, resampled = resampled)
 }
 
 ## ==== 周波数解析（Welch PSD・帯域積分・HRV周波数指標） ==================
@@ -552,10 +444,10 @@ build_peak_rr_table <- function(peaks, rr_df) {
   merged
 }
 
-build_analysis_conditions <- function(app_version, pulsewavetools_version, input_columns, sampling_rate_hz,
+build_analysis_conditions <- function(app_version, input_columns, sampling_rate_hz,
                                        peak_condition, outlier_condition, resampling_condition, psd_condition,
                                        freq_bands, run_datetime = Sys.time()) {
-  list(app_version = app_version, pulsewavetools_version = pulsewavetools_version, input_columns = input_columns,
+  list(app_version = app_version, input_columns = input_columns,
        sampling_rate_hz = sampling_rate_hz, peak_condition = peak_condition, outlier_condition = outlier_condition,
        resampling_condition = resampling_condition, psd_condition = psd_condition, freq_bands = freq_bands,
        run_datetime = format(run_datetime, "%Y-%m-%dT%H:%M:%S%z"))
@@ -670,12 +562,11 @@ slice_resampled_by_window <- function(resampled, window_start_sec, window_end_se
 # PSDとHRV指標を算出する統合関数（section 5）。窓ごとの失敗はwarning_codeに
 # 反映し、他の窓やアプリ全体には影響させない（section 9）。
 run_hrv_analysis <- function(time_sec, ppg, fs_hz, analysis_start_sec, analysis_end_sec,
-                              mode = c("legacy", "recommended"), window_mode = c("single", "fixed", "multi_csv"),
+                              window_mode = c("single", "fixed", "multi_csv"),
                               window_length_sec = NULL, step_sec = NULL, multi_csv_df = NULL, freq_bands,
                               psd_config = list(window_sec = NULL, overlap_ratio = 0.5, nfft = NULL),
                               peak_params = list(min_peak_distance_sec = NULL, min_peak_height = NULL),
                               sd_multiplier = 3, resample_hz = 4, config, file_name = "", analysis_id = "") {
-  mode <- match.arg(mode)
   window_mode <- match.arg(window_mode)
   record_start_sec <- min(time_sec, na.rm = TRUE)
   record_end_sec <- max(time_sec, na.rm = TRUE)
@@ -689,12 +580,12 @@ run_hrv_analysis <- function(time_sec, ppg, fs_hz, analysis_start_sec, analysis_
   ppg_sub <- ppg[idx]
   time_sub <- time_sec[idx]
 
-  pk <- detect_peaks(ppg_sub, fs_hz, time_sec = time_sub, mode = mode,
+  pk <- detect_peaks(ppg_sub, fs_hz, time_sec = time_sub,
                       min_peak_distance_sec = peak_params$min_peak_distance_sec, min_peak_height = peak_params$min_peak_height)
   peaks <- pk$peaks
   if (nrow(peaks) < 2L) stop("ピーク数が不足しているためRRを生成できません。")
 
-  rr_pipeline <- run_rr_pipeline(peaks, mode = mode, sd_multiplier = sd_multiplier, resample_hz = resample_hz)
+  rr_pipeline <- run_rr_pipeline(peaks, sd_multiplier = sd_multiplier, resample_hz = resample_hz)
   rr <- rr_pipeline$rr
   resampled <- rr_pipeline$resampled
 
@@ -711,7 +602,7 @@ run_hrv_analysis <- function(time_sec, ppg, fs_hz, analysis_start_sec, analysis_
     n_raw_in_window <- sum(time_sub >= w$window_start_sec & (if (w$include_end) time_sub <= w$window_end_sec else time_sub < w$window_end_sec))
     n_peaks_in_window <- sum(peak_time_sec >= w$window_start_sec & (if (w$include_end) peak_time_sec <= w$window_end_sec else peak_time_sec < w$window_end_sec))
 
-    row_common <- list(file_name = file_name, analysis_id = analysis_id, analysis_mode = mode, window_id = w$window_id,
+    row_common <- list(file_name = file_name, analysis_id = analysis_id, analysis_mode = "recommended", window_id = w$window_id,
                         window_start_sec = w$window_start_sec, window_end_sec = w$window_end_sec,
                         window_length_sec = w$window_length_sec, step_sec = w$step_sec, sampling_rate_raw_hz = fs_hz,
                         resampling_rate_rr_hz = resampled$resample_hz, n_raw_samples = n_raw_in_window,
@@ -749,7 +640,7 @@ run_hrv_analysis <- function(time_sec, ppg, fs_hz, analysis_start_sec, analysis_
   }
 
   list(peaks = peaks, rr = rr, resampled = resampled, windows = windows, results_df = combine_result_rows(result_rows),
-       psd_by_window = psd_by_window, outlier_method = rr_pipeline$outlier_method, resample_method = rr_pipeline$resample_method)
+       psd_by_window = psd_by_window)
 }
 
 ## ==== 表示専用ユーティリティ（解析結果には影響しない） ==================
@@ -770,18 +661,14 @@ ui <- fluidPage(
       width = 4,
       h4("1. データ入力"),
       fileInput("raw_file", "ローデータファイル (CSV/TSV)", accept = c(".csv", ".tsv", ".txt")),
-      uiOutput("column_select_ui"),
-      helpText(sprintf("既知の時刻列: %s / 既知のPPG列: %s", paste(KNOWN_TIME_COLS, collapse = ", "), paste(KNOWN_PPG_COLS, collapse = ", "))),
       verbatimTextOutput("fs_info"),
       checkboxInput("fs_manual_toggle", "サンプリング周波数を手動で上書きする", value = FALSE),
       conditionalPanel("input.fs_manual_toggle == true",
         numericInput("fs_manual", "サンプリング周波数 (Hz)", value = 200, min = 1, max = 2000)),
 
-      hr(), h4("2. 解析モード"),
-      radioButtons("mode", NULL, choices = c("legacy（PulseWaveTools忠実再現）" = "legacy", "recommended（改良版）" = "recommended"), selected = "legacy"),
-      conditionalPanel("input.mode == 'recommended'",
-        numericInput("min_peak_distance_sec", "最小ピーク距離 (秒)", value = 0.35, min = 0.1, max = 2, step = 0.05),
-        numericInput("resample_hz", "再サンプリング周波数 (Hz)", value = 4, min = 1, max = 20, step = 1)),
+      hr(), h4("2. 解析パラメータ"),
+      numericInput("min_peak_distance_sec", "最小ピーク距離 (秒)", value = 0.35, min = 0.1, max = 2, step = 0.05),
+      numericInput("resample_hz", "再サンプリング周波数 (Hz)", value = 4, min = 1, max = 20, step = 1),
 
       hr(), h4("3. 解析対象範囲"),
       fluidRow(column(6, numericInput("analysis_start", "開始秒", value = 0)),
@@ -841,28 +728,11 @@ server <- function(input, output, session) {
     if (length(res$warnings) > 0L) showNotification(paste(res$warnings, collapse = "\n"), type = "warning", duration = 10)
   })
 
-  output$column_select_ui <- renderUI({
-    req(imported())
-    cols <- imported()$columns$all
-    tagList(selectInput("time_col", "時刻列", choices = cols, selected = imported()$columns$time_col),
-            selectInput("ppg_col", "PPG列", choices = cols, selected = imported()$columns$ppg_col))
-  })
-
-  observeEvent(list(input$time_col, input$ppg_col), {
-    req(imported(), input$raw_file, input$time_col, input$ppg_col)
-    if (input$time_col == imported()$columns$time_col && input$ppg_col == imported()$columns$ppg_col) return()
-    res <- tryCatch(import_shimmer_file(input$raw_file$datapath, time_col = input$time_col, ppg_col = input$ppg_col),
-                     error = function(e) { showNotification(paste("列の選択が不正です:", conditionMessage(e)), type = "error"); NULL })
-    if (!is.null(res)) {
-      imported(res)
-      updateNumericInput(session, "analysis_end", value = max(res$time_sec, na.rm = TRUE))
-    }
-  }, ignoreInit = TRUE)
-
   output$fs_info <- renderText({
     req(imported())
     d <- imported()
-    sprintf("推定サンプリング周波数: %.3f Hz (dt中央値=%.5f 秒)\n使用中のfs: %.3f Hz (%s)\nサンプル数: %d / 記録長: %.1f 秒",
+    sprintf("検出列: 時刻=%s, PPG=%s\n推定サンプリング周波数: %.3f Hz (dt中央値=%.5f 秒)\n使用中のfs: %.3f Hz (%s)\nサンプル数: %d / 記録長: %.1f 秒",
+            d$columns$time_col, d$columns$ppg_col,
             d$fs_estimated_hz %||% NA_real_, d$dt_median_sec %||% NA_real_, d$fs_hz, d$fs_source, d$n_samples, max(d$time_sec, na.rm = TRUE))
   })
 
@@ -899,13 +769,13 @@ server <- function(input, output, session) {
       run_hrv_analysis(
         time_sec = d$time_sec, ppg = d$ppg, fs_hz = fs_used(),
         analysis_start_sec = input$analysis_start, analysis_end_sec = input$analysis_end,
-        mode = input$mode, window_mode = input$window_mode,
+        window_mode = input$window_mode,
         window_length_sec = input$window_length_sec, step_sec = input$step_sec,
         multi_csv_df = multi_csv_df, freq_bands = freq_bands,
         psd_config = list(window_sec = APP_CONFIG$psd$window_sec, overlap_ratio = APP_CONFIG$psd$overlap_ratio, nfft = APP_CONFIG$psd$nfft),
         peak_params = list(min_peak_distance_sec = input$min_peak_distance_sec, min_peak_height = NULL),
-        sd_multiplier = APP_CONFIG$outlier$legacy$sd_multiplier,
-        resample_hz = input$resample_hz %||% APP_CONFIG$resampling$recommended$default_hz,
+        sd_multiplier = APP_CONFIG$outlier$sd_multiplier,
+        resample_hz = input$resample_hz %||% APP_CONFIG$resampling$default_hz,
         config = APP_CONFIG, file_name = input$raw_file$name %||% "", analysis_id = format(Sys.time(), "%Y%m%d%H%M%S")
       ),
       error = function(e) { showNotification(paste("解析に失敗しました:", conditionMessage(e)), type = "error", duration = NULL); NULL }
@@ -957,8 +827,7 @@ server <- function(input, output, session) {
   output$qc_summary <- renderText({
     r <- analysis_result(); req(r)
     tab <- table(r$results_df$warning_code)
-    paste(c(sprintf("外れ値補正方法: %s", r$outlier_method), sprintf("等間隔化方法: %s", r$resample_method), "",
-            "warning_code 集計:", paste(sprintf("  %s: %d 窓", names(tab), as.integer(tab)), collapse = "\n")), collapse = "\n")
+    paste(c("warning_code 集計:", paste(sprintf("  %s: %d 窓", names(tab), as.integer(tab)), collapse = "\n")), collapse = "\n")
   })
 
   output$download_results <- downloadHandler(
@@ -986,11 +855,10 @@ server <- function(input, output, session) {
       validate(need(!is.null(r) && !is.null(d), "先に解析を実行してください。"))
       cond <- build_analysis_conditions(
         app_version = APP_VERSION,
-        pulsewavetools_version = "引き継ぎ書section4のアルゴリズム仕様に基づく再実装（原ソース未入手）",
         input_columns = d$columns, sampling_rate_hz = fs_used(),
-        peak_condition = list(mode = input$mode, min_peak_distance_sec = if (input$mode == "legacy") 0.5 else input$min_peak_distance_sec),
-        outlier_condition = list(mode = input$mode, sd_multiplier = APP_CONFIG$outlier$legacy$sd_multiplier),
-        resampling_condition = list(mode = input$mode, resample_hz = r$resampled$resample_hz),
+        peak_condition = list(min_peak_distance_sec = input$min_peak_distance_sec),
+        outlier_condition = list(sd_multiplier = APP_CONFIG$outlier$sd_multiplier),
+        resampling_condition = list(resample_hz = r$resampled$resample_hz),
         psd_condition = APP_CONFIG$psd,
         freq_bands = list(lf_lower_hz = input$lf_lower, lf_upper_hz = input$lf_upper, hf_lower_hz = input$hf_lower, hf_upper_hz = input$hf_upper)
       )
