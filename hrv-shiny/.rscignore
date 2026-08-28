@@ -1,0 +1,4 @@
+# テストスイート（testthatに依存）はデプロイ用バンドルに含めない。
+# rsconnectの依存関係解析がtestthatの解決に失敗して
+# 「Error in FUN(X[[i]], ...) : subscript out of bounds」を招くケースを避けるため。
+tests/

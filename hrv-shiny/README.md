@@ -48,6 +48,44 @@ apt-get install -y r-base-core r-cran-shiny r-cran-dt r-cran-pracma r-cran-zoo \
   r-cran-data.table r-cran-yaml r-cran-jsonlite r-cran-testthat r-cran-renv
 ```
 
+## デプロイ時のトラブルシューティング
+
+`rsconnect::deployApp()`（shinyapps.ioへのデプロイ）で以下のようなエラーが出る場合：
+
+```
+ℹ Capturing R dependencies from renv.lock
+Error in FUN(X[[i]], ...) : subscript out of bounds
+In addition: Warning messages:
+1: In packageDescription(name, lib.loc = lib_dir, encoding = "UTF-8") :
+  no package 'shiny' was found
+...
+```
+
+これは`app.R`やコードの不具合ではなく、**`rsconnect::deployApp()`を実行しているRセッションの
+ライブラリに、`renv.lock`記載のパッケージが実際にはインストールされていない**ことが原因です。
+`renv.lock`はプロジェクトの依存関係の「記録」に過ぎず、それだけでは対象パッケージは
+インストールされません。`renv`が有効化されないまま（＝プロジェクト専用ライブラリではなく
+グローバルライブラリを見に行った状態で）`packageDescription()`が対象パッケージを見つけられず、
+rsconnect内部の依存グラフ構築処理が`subscript out of bounds`で落ちます。
+
+**対処手順**：
+
+1. `hrv-shiny/`ディレクトリをカレントにしてRセッションを開始する（`.Rprofile`が読み込まれる状態）。
+2. 同じセッションで依存関係を復元する。
+   ```r
+   renv::restore()
+   ```
+3. 復元が完了していることを確認する。
+   ```r
+   renv::status()
+   ```
+4. **同じRセッションのまま**（別セッションで開き直さない）`rsconnect::deployApp()`を実行する。
+   セッションを開き直すとライブラリの有効化状態がリセットされる場合があるため。
+
+なお本リポジトリには`.rscignore`を追加し、`tests/`（`testthat`に依存）をデプロイ用バンドルから
+除外しています。テストの実行自体には引き続き`testthat`のインストールが必要です
+（下記「テスト実行」参照）。
+
 ## 起動方法
 
 ```bash
