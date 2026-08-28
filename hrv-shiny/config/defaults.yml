@@ -1,0 +1,69 @@
+# HRV Shiny app – 既定値・閾値の集約設定
+# すべての「マジックナンバー」はここに集約し、R コード側に散在させない。
+
+app:
+  version: "0.1.0"
+
+sampling:
+  default_fs_hz: null          # 既定値でfsを固定しない。推定値を必ずUIに表示する。
+  min_valid_fs_hz: 20
+  max_valid_fs_hz: 2000
+
+peak_detection:
+  legacy:
+    min_peak_distance_factor: 0.5   # minpeakdistance = factor * samplingRate（固定・変更不可）
+  recommended:
+    min_peak_distance_sec: 0.35     # 120bpm超を許容する既定値（UIから変更可）
+    min_peak_height: null
+
+outlier:
+  legacy:
+    sd_multiplier: 3
+  recommended:
+    sd_multiplier: 3
+    method: "batch"                 # 一括マスク後に一回だけ補間
+
+resampling:
+  legacy:
+    grid_hz: 1                      # 1ms格子 -> zoo::na.spline -> 1Hz抽出
+  recommended:
+    default_hz: 4
+    candidate_hz: [2, 4, 8]
+
+frequency_bands:
+  lf_lower_hz: 0.04
+  lf_upper_hz: 0.15
+  hf_lower_hz: 0.15
+  hf_upper_hz: 0.40
+
+psd:
+  method: "welch"
+  window_sec: null                 # nullの場合は窓長に応じて自動決定
+  overlap_ratio: 0.5
+  nfft: null                       # nullの場合は次の2べき乗を自動使用
+
+windowing:
+  default_window_sec: 300
+  short_window_thresholds_sec: [30, 60]   # これ未満(実際にはこれらの値)でLF/LF-HFに警告
+  default_step_sec: 300            # step == window で非重複
+
+quality:
+  min_rr_count: 20                 # 有効RR数の下限（これ未満はNA）
+  min_psd_points_per_band: 2       # LF/HF帯域内のPSD点数下限
+  max_artifact_percent: 30         # 補正率上限（超過で警告）
+  min_freq_resolution_hz: 0.01     # 周波数分解能の目安下限
+
+display:
+  waveform_decimation_max_points: 20000   # 表示用間引きの上限点数（解析には影響しない）
+
+warnings:
+  codes:
+    OK: "正常"
+    W_SHORT_WINDOW: "窓長が短く、特にLFおよびLF/HFの推定が不安定な可能性があります。"
+    W_HIGH_ARTIFACT: "外れ値補正率が高く、結果の信頼性が低い可能性があります。"
+    E_INSUFFICIENT_RR: "有効なRR間隔数が不足しているため算出できません。"
+    E_INSUFFICIENT_PSD_POINTS: "周波数帯域内のPSD点数が不足しているため算出できません。"
+    E_SPLINE_FAILED: "スプライン補間に失敗しました。"
+    E_PSD_FAILED: "PSD推定に失敗しました。"
+    E_ZERO_OR_NA_BAND: "LFまたはHFが0またはNAです。"
+    E_WINDOW_OUT_OF_RANGE: "時間窓が記録範囲を超えています。"
