@@ -18,8 +18,16 @@ PulseWaveTools原本アルゴリズムを忠実再現する「legacyモード」
 
 ```bash
 cd hrv-shiny
-Rscript -e 'renv::restore()'   # renv.lockに記録された依存関係を復元
+Rscript -e 'renv::restore(lockfile = "renv-lock/renv.lock")'   # renv.lockに記録された依存関係を復元
 ```
+
+**注意：このディレクトリで `renv::init()` や `renv::activate()` は実行しないでください。**
+`renv::restore(lockfile = ...)` は明示的にlockfileパスを渡す限り、renvプロジェクトを
+初期化しなくても動作します。`renv::init()` を実行すると `renv/activate.R` が作られ、
+`.Rprofile` に `source("renv/activate.R")` が追記されますが、この状態でデプロイすると
+下記「shinyapps.io等へのデプロイ」で説明する`subscript out of bounds`エラーが再発します。
+誤って実行してしまった場合は、`renv/` ディレクトリを削除し、`.Rprofile` 先頭に追加された
+`source("renv/activate.R")` の行を削除してください。
 
 Docker等でクリーンな環境から動かす場合は、Ubuntu系であれば以下でも依存パッケージを揃えられます。
 
@@ -27,44 +35,6 @@ Docker等でクリーンな環境から動かす場合は、Ubuntu系であれ�
 apt-get install -y r-base-core r-cran-shiny r-cran-dt r-cran-pracma r-cran-zoo \
   r-cran-data.table r-cran-yaml r-cran-jsonlite r-cran-testthat r-cran-renv
 ```
-
-## デプロイ時のトラブルシューティング
-
-`rsconnect::deployApp()`（shinyapps.ioへのデプロイ）で以下のようなエラーが出る場合：
-
-```
-ℹ Capturing R dependencies from renv.lock
-Error in FUN(X[[i]], ...) : subscript out of bounds
-In addition: Warning messages:
-1: In packageDescription(name, lib.loc = lib_dir, encoding = "UTF-8") :
-  no package 'shiny' was found
-...
-```
-
-これは`app.R`やコードの不具合ではなく、**`rsconnect::deployApp()`を実行しているRセッションの
-ライブラリに、`renv.lock`記載のパッケージが実際にはインストールされていない**ことが原因です。
-`renv.lock`はプロジェクトの依存関係の「記録」に過ぎず、それだけでは対象パッケージは
-インストールされません。`renv`が有効化されないまま（＝プロジェクト専用ライブラリではなく
-グローバルライブラリを見に行った状態で）`packageDescription()`が対象パッケージを見つけられず、
-rsconnect内部の依存グラフ構築処理が`subscript out of bounds`で落ちます。
-
-**対処手順**：
-
-1. `hrv-shiny/`ディレクトリをカレントにしてRセッションを開始する（`.Rprofile`が読み込まれる状態）。
-2. 同じセッションで依存関係を復元する。
-   ```r
-   renv::restore()
-   ```
-3. 復元が完了していることを確認する。
-   ```r
-   renv::status()
-   ```
-4. **同じRセッションのまま**（別セッションで開き直さない）`rsconnect::deployApp()`を実行する。
-   セッションを開き直すとライブラリの有効化状態がリセットされる場合があるため。
-
-なお本リポジトリには`.rscignore`を追加し、`tests/`（`testthat`に依存）をデプロイ用バンドルから
-除外しています。テストの実行自体には引き続き`testthat`のインストールが必要です
-（下記「テスト実行」参照）。
 
 ## 起動方法
 
@@ -75,6 +45,38 @@ Rscript -e 'shiny::runApp(".", port=3838, host="0.0.0.0")'
 
 ブラウザで `http://localhost:3838` を開き、`sample_data/synthetic_shimmer_sample.csv`
 （または実データ）をアップロードして動作を確認できます。
+
+## shinyapps.io等へのデプロイ
+
+`rsconnect::deployApp()` はアプリのディレクトリ直下（プロジェクトルート）に
+`renv.lock` または `renv/activate.R` があると、自動的に「renvモード」でデプロイし、
+デプロイ元マシンの実際のRライブラリと `renv.lock` の内容が完全一致していることを
+要求します。ズレがあると `Error in FUN(X[[i]], ...) : subscript out of bounds` の
+ような分かりにくいエラーで失敗します（"library and lockfile are out of sync"）。
+
+この自動判定は `.rscignore` でファイルをバンドル対象から除外しても止まりません
+（`.rscignore` はアップロードするファイルの絞り込みであり、renvプロジェクトか
+どうかの判定はそれとは別にファイルの「存在」を見ているため）。そのため本アプリでは：
+
+- `renv.lock` をプロジェクトルートに置かず **`renv-lock/renv.lock`** に配置しています。
+- **このディレクトリで `renv::init()` を実行しないでください**（`renv/activate.R` が
+  作られると同じ問題が再発します。上記「セットアップ」の注意も参照）。
+
+これによりrsconnectはrenvプロジェクトと判定せず、`app.R` を直接スキャンして
+ローカルにインストール済みのパッケージから依存関係を自動検出します。デプロイ前に、
+最低限以下のパッケージをデプロイ元のRにインストールしておいてください。
+
+```r
+install.packages(c("shiny", "DT", "data.table", "pracma", "zoo", "yaml", "jsonlite"))
+```
+
+お使いのrsconnectが `dependencyResolution` 引数に対応している場合（比較的新しい
+バージョン）は、`rsconnect::deployApp(dependencyResolution = "library")` と明示的に
+指定する方法でも同じ回避が可能です。`renv-lock/renv.lock` はローカル開発時の
+再現性確保（`renv::restore(lockfile = "renv-lock/renv.lock")`）のために残しています。
+
+`rsconnect/` ディレクトリ（デプロイ先のアカウント・アプリID等）は `.gitignore` 済みで、
+リポジトリには含まれません。各自の環境にのみ存在するローカルな状態です。
 
 ## テスト実行
 
@@ -106,7 +108,8 @@ hrv-shiny/
 ├── tests/testthat/              # app.Rをsource()して関数群を直接テストする
 ├── config/defaults.yml          # 閾値・既定値の集約設定
 ├── sample_data/                 # 合成デモデータ（実データではない）
-├── renv.lock
+├── renv-lock/renv.lock          # ルート直下に置くとrsconnectのrenvモードが誤検出されるため隔離
+├── .rscignore                   # shinyapps.io等へのデプロイ時にtests/等を除外
 └── README.md
 ```
 
