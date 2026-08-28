@@ -1,5 +1,12 @@
-renv.lock
-tests/
-sample_data/
+renv-lock
+renv-lock/renv.lock
+renv
+rsconnect
+tests
+tests/*
+tests/testthat
+tests/testthat/*
+sample_data
+sample_data/*
 README.md
 .gitignore

@@ -1,10 +1,11 @@
 .Rhistory
 .RData
 .Rproj.user/
-renv/library/
-renv/local/
-renv/cellar/
-renv/lock/
-renv/python/
-renv/sandbox/
-renv/staging/
+.DS_Store
+
+# renv::init()はこのディレクトリでは実行しないこと（README「shinyapps.io等への
+# デプロイ」参照）。誤って作られた場合に備えてignoreしておく。
+renv/
+
+# rsconnectのデプロイ先メタデータ（アカウント/アプリID等、機種依存）はコミットしない。
+rsconnect/

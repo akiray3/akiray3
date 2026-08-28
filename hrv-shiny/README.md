@@ -38,8 +38,16 @@ QC情報を算出するR Shinyアプリです。
 
 ```bash
 cd hrv-shiny
-Rscript -e 'renv::restore()'   # renv.lockに記録された依存関係を復元
+Rscript -e 'renv::restore(lockfile = "renv-lock/renv.lock")'   # renv.lockに記録された依存関係を復元
 ```
+
+**注意：このディレクトリで `renv::init()` や `renv::activate()` は実行しないでください。**
+`renv::restore(lockfile = ...)` は明示的にlockfileパスを渡す限り、renvプロジェクトを
+初期化しなくても動作します。`renv::init()` を実行すると `renv/activate.R` が作られ、
+`.Rprofile` に `source("renv/activate.R")` が追記されますが、この状態でデプロイすると
+下記「shinyapps.io等へのデプロイ」で説明する`subscript out of bounds`エラーが再発します。
+誤って実行してしまった場合は、`renv/` ディレクトリを削除し、`.Rprofile` 先頭に追加された
+`source("renv/activate.R")` の行を削除してください。
 
 Docker等でクリーンな環境から動かす場合は、Ubuntu系であれば以下でも依存パッケージを揃えられます。
 
@@ -60,21 +68,35 @@ Rscript -e 'shiny::runApp(".", port=3838, host="0.0.0.0")'
 
 ## shinyapps.io等へのデプロイ
 
-`rsconnect::deployApp()` はプロジェクトに `renv.lock` があると、デプロイ元マシンの
-実際のRライブラリと `renv.lock` の内容が完全一致していることを要求し、ズレがあると
-`Error in FUN(X[[i]], ...) : subscript out of bounds` のような分かりにくいエラーで
-失敗することがあります（"library and lockfile are out of sync"）。
+`rsconnect::deployApp()` はアプリのディレクトリ直下（プロジェクトルート）に
+`renv.lock` または `renv/activate.R` があると、自動的に「renvモード」でデプロイし、
+デプロイ元マシンの実際のRライブラリと `renv.lock` の内容が完全一致していることを
+要求します。ズレがあると `Error in FUN(X[[i]], ...) : subscript out of bounds` の
+ような分かりにくいエラーで失敗します（"library and lockfile are out of sync"）。
 
-本アプリでは `.rscignore` に `renv.lock` を含めており、デプロイ時はrsconnectが
-`app.R` を直接スキャンしてローカルにインストール済みのパッケージから依存関係を
-自動検出する方式（lockfileを使わない方式）になります。デプロイ前に、最低限
-以下のパッケージをデプロイ元のRにインストールしておいてください。
+この自動判定は `.rscignore` でファイルをバンドル対象から除外しても止まりません
+（`.rscignore` はアップロードするファイルの絞り込みであり、renvプロジェクトか
+どうかの判定はそれとは別にファイルの「存在」を見ているため）。そのため本アプリでは：
+
+- `renv.lock` をプロジェクトルートに置かず **`renv-lock/renv.lock`** に配置しています。
+- **このディレクトリで `renv::init()` を実行しないでください**（`renv/activate.R` が
+  作られると同じ問題が再発します。上記「セットアップ」の注意も参照）。
+
+これによりrsconnectはrenvプロジェクトと判定せず、`app.R` を直接スキャンして
+ローカルにインストール済みのパッケージから依存関係を自動検出します。デプロイ前に、
+最低限以下のパッケージをデプロイ元のRにインストールしておいてください。
 
 ```r
 install.packages(c("shiny", "DT", "data.table", "pracma", "zoo", "yaml", "jsonlite"))
 ```
 
-`renv.lock` はローカル開発時の再現性確保（`renv::restore()`）のために残しています。
+お使いのrsconnectが `dependencyResolution` 引数に対応している場合（比較的新しい
+バージョン）は、`rsconnect::deployApp(dependencyResolution = "library")` と明示的に
+指定する方法でも同じ回避が可能です。`renv-lock/renv.lock` はローカル開発時の
+再現性確保（`renv::restore(lockfile = "renv-lock/renv.lock")`）のために残しています。
+
+`rsconnect/` ディレクトリ（デプロイ先のアカウント・アプリID等）は `.gitignore` 済みで、
+リポジトリには含まれません。各自の環境にのみ存在するローカルな状態です。
 
 ## テスト実行
 
@@ -120,7 +142,8 @@ hrv-shiny/
 ├── tests/testthat/              # app.Rをsource()して関数群を直接テストする
 ├── config/defaults.yml          # 閾値・既定値の集約設定
 ├── sample_data/                 # 合成デモデータ（実データではない、上記注意参照）
-├── renv.lock
+├── renv-lock/renv.lock          # ルート直下に置くとrsconnectのrenvモードが誤検出されるため隔離
+├── .rscignore                   # shinyapps.io等へのデプロイ時にtests/等を除外
 └── README.md
 ```
 
