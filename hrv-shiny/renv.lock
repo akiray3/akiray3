@@ -431,16 +431,6 @@
       ],
       "Hash": "5e3c5dc0b071b21fa128676560dbe94d"
     },
-    "renv": {
-      "Package": "renv",
-      "Version": "1.0.3",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "utils"
-      ],
-      "Hash": "41b847654f567341725473431dd0d5ab"
-    },
     "rlang": {
       "Package": "rlang",
       "Version": "1.1.3",
@@ -644,12 +634,6 @@
         "utils"
       ],
       "Hash": "5c715954112b45499fb1dadc6ee6ee3e"
-    },
-    "testthat": {
-      "Package": "testthat",
-      "Version": "3.2.1",
-      "Source": "Repository",
-      "Repository": "CRAN"
     }
   }
 }

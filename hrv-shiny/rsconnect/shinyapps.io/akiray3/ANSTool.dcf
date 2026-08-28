@@ -1,0 +1,12 @@
+name: ANSTool
+title: ANSTool
+username: akiray3
+account: akiray3
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 17776041
+bundleId:
+url: https://akiray3.shinyapps.io/ANSTool/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

@@ -1,0 +1,5 @@
+renv.lock
+tests/
+sample_data/
+README.md
+.gitignore

@@ -58,6 +58,24 @@ Rscript -e 'shiny::runApp(".", port=3838, host="0.0.0.0")'
 ブラウザで `http://localhost:3838` を開き、`sample_data/synthetic_shimmer_sample.csv`
 （または実データ）をアップロードして動作を確認できます。
 
+## shinyapps.io等へのデプロイ
+
+`rsconnect::deployApp()` はプロジェクトに `renv.lock` があると、デプロイ元マシンの
+実際のRライブラリと `renv.lock` の内容が完全一致していることを要求し、ズレがあると
+`Error in FUN(X[[i]], ...) : subscript out of bounds` のような分かりにくいエラーで
+失敗することがあります（"library and lockfile are out of sync"）。
+
+本アプリでは `.rscignore` に `renv.lock` を含めており、デプロイ時はrsconnectが
+`app.R` を直接スキャンしてローカルにインストール済みのパッケージから依存関係を
+自動検出する方式（lockfileを使わない方式）になります。デプロイ前に、最低限
+以下のパッケージをデプロイ元のRにインストールしておいてください。
+
+```r
+install.packages(c("shiny", "DT", "data.table", "pracma", "zoo", "yaml", "jsonlite"))
+```
+
+`renv.lock` はローカル開発時の再現性確保（`renv::restore()`）のために残しています。
+
 ## テスト実行
 
 ```bash
